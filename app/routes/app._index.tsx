@@ -28,8 +28,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const supabaseAccessToken = formData.get("supabaseAccessToken") as string;
 
   if (actionType === "disconnect") {
-     // Handle disconnect if needed
-     // Ideally we should also use the user token to verify ownership before deleting
      return { success: true, disconnected: true };
   }
 
@@ -38,7 +36,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         return { success: false, error: "Missing Supabase token" };
     }
 
-    // Create a Supabase client scoped to the user
     const supabaseUrl = process.env.SUPABASE_URL!;
     const supabaseKey = process.env.SUPABASE_ANON_KEY!;
     
@@ -50,14 +47,46 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         },
     });
 
-    // Get the user to verify the token is valid
     const { data: { user }, error: userError } = await userSupabase.auth.getUser();
 
     if (userError || !user) {
         return { success: false, error: "Invalid Supabase token" };
     }
 
-    // Upsert the connection
+    const { data: subscription, error: subError } = await userSupabase
+        .from("subscriptions")
+        .select("*, subscription_plans(*)")
+        .eq("user_id", user.id)
+        .in("status", ["active", "trialing"])
+        .maybeSingle();
+
+    if (subError || !subscription) {
+        console.error("Subscription error:", subError);
+        return { success: false, error: "No active subscription found. Please subscribe to a plan." };
+    }
+
+    const { count: storeCount } = await userSupabase
+        .from("shopify_stores")
+        .select("*", { count: 'exact', head: true })
+        .eq("user_id", user.id);
+
+    const { data: existingShop } = await userSupabase
+        .from("shopify_stores")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("shop_url", session.shop)
+        .maybeSingle();
+
+    const maxStores = subscription.subscription_plans?.max_stores ?? 0;
+    const currentCount = storeCount ?? 0;
+
+    if (!existingShop && currentCount >= maxStores) {
+        return { 
+            success: false, 
+            error: `Store limit reached (${currentCount}/${maxStores}). Please upgrade your plan to connect more stores.` 
+        };
+    }
+
     const { error: dbError } = await userSupabase
         .from("shopify_stores")
         .upsert({
@@ -66,7 +95,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             access_token: session.accessToken,
             scope: session.scope,
             is_active: true,
-            installed_at: new Date().toISOString(),
+            installed_at: existingShop ? undefined : new Date().toISOString(), 
             updated_at: new Date().toISOString(),
         }, { onConflict: 'shop_url' });
     
@@ -87,9 +116,11 @@ export default function Index() {
   
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [isStoreConnected, setIsStoreConnected] = useState(false);
+  const [isOwnedByOther, setIsOwnedByOther] = useState(false);
   const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
+  const [storeLimitError, setStoreLimitError] = useState<string | null>(null);
 
-  // Check auth and connection status
   useEffect(() => {
     if (!supabaseClient) {
         setLoadingAuth(false);
@@ -109,6 +140,26 @@ export default function Index() {
 
         setAccessToken(session.access_token);
 
+        // 1. Check Subscription
+        const { data: subscription, error: subError } = await client
+            .from("subscriptions")
+            .select("*, subscription_plans(*)")
+            .eq("user_id", session.user.id)
+            .in("status", ["active", "trialing"])
+            .maybeSingle();
+
+        if (subError || !subscription) {
+             setSubscriptionError("No active subscription found. Please subscribe to a plan.");
+        } else {
+             setSubscriptionError(null);
+        }
+
+        // 2. Check Store Limits
+        const { count: storeCount } = await client
+            .from("shopify_stores")
+            .select("*", { count: 'exact', head: true })
+            .eq("user_id", session.user.id);
+
         // Check if store is connected
         const { data, error } = await client
             .from("shopify_stores")
@@ -120,10 +171,31 @@ export default function Index() {
             console.error("Error checking store connection:", error);
         }
 
-        if (data && data.is_active) {
-            setIsStoreConnected(true);
+        // Calculate limits
+        const maxStores = subscription?.subscription_plans?.max_stores ?? 0;
+        const currentCount = storeCount ?? 0;
+        
+        // If this shop is NOT connected, and we are at limit
+        if (!data && currentCount >= maxStores && subscription) {
+             setStoreLimitError(`Store limit reached (${currentCount}/${maxStores}). Please upgrade your plan.`);
+        } else {
+             setStoreLimitError(null);
+        }
+
+        if (data) {
+            if (data.user_id !== session.user.id) {
+                setIsOwnedByOther(true);
+                setIsStoreConnected(false);
+            } else if (data.is_active) {
+                setIsStoreConnected(true);
+                setIsOwnedByOther(false);
+            } else {
+                setIsStoreConnected(false);
+                setIsOwnedByOther(false);
+            }
         } else {
             setIsStoreConnected(false);
+            setIsOwnedByOther(false);
         }
 
         setLoadingAuth(false);
@@ -140,9 +212,17 @@ export default function Index() {
     });
 
     return () => subscription.unsubscribe();
-  }, [navigate, shop, fetcher.data]); // Re-run if fetcher completes
+  }, [navigate, shop, fetcher.data]);
 
   const handleConnect = () => {
+    if (!accessToken) return;
+    fetcher.submit(
+        { actionType: "connect", supabaseAccessToken: accessToken },
+        { method: "post" }
+    );
+  };
+
+  const handleRegenerateToken = () => {
     if (!accessToken) return;
     fetcher.submit(
         { actionType: "connect", supabaseAccessToken: accessToken },
@@ -160,18 +240,7 @@ export default function Index() {
       );
   }
 
-  // If fetcher just succeeded, update state optimistically or wait for useEffect re-check?
-  // useEffect depends on fetcher.data, so it might re-check. 
-  // But let's look at fetcher state to be responsive.
   const isConnecting = fetcher.state === "submitting" && fetcher.formData?.get("actionType") === "connect";
-  
-  // Update local state if fetcher returns success
-  if (fetcher.data?.success && fetcher.data?.connected && !isStoreConnected) {
-      // Optimistic update or just rely on the re-render
-      // Better to rely on the effect re-fetching or setting it here if we trust the server response
-      // But we can't easily set state in render.
-      // We'll rely on the useEffect hook which includes fetcher.data dependency.
-  }
 
   return (
     <Page>
@@ -191,7 +260,35 @@ export default function Index() {
                     </Banner>
                 )}
 
-                {isStoreConnected || (fetcher.data?.connected) ? (
+                {subscriptionError && (
+                    <Banner tone="critical">
+                        <p><strong>Subscription Required</strong></p>
+                        <p>{subscriptionError}</p>
+                    </Banner>
+                )}
+
+                {storeLimitError && (
+                    <Banner tone="warning">
+                         <p><strong>Limit Reached</strong></p>
+                         <p>{storeLimitError}</p>
+                    </Banner>
+                )}
+
+                {isOwnedByOther && (
+                    <Banner tone="critical">
+                        <p><strong>Store Unavailable</strong></p>
+                        <p>This store is already connected to another Pixeo account.</p>
+                        <p>Please log in with the correct account or contact support.</p>
+                    </Banner>
+                )}
+
+                {fetcher.data?.success && fetcher.data?.connected && (
+                    <Banner tone="success">
+                        <p>Operation successful</p>
+                    </Banner>
+                )}
+
+                {isStoreConnected || (fetcher.data?.connected && !isOwnedByOther) ? (
                    <BlockStack gap="400">
                       <Banner tone="success">
                         <p><strong>Connection Active</strong></p>
@@ -200,6 +297,21 @@ export default function Index() {
                       <Text as="p">
                         Pixeo has access to your themes and products.
                       </Text>
+                      
+                      <BlockStack gap="200">
+                        <Text as="h3" variant="headingSm">Actions</Text>
+                        <Button
+                            onClick={handleRegenerateToken}
+                            loading={isConnecting}
+                            disabled={isOwnedByOther || !!subscriptionError}
+                        >
+                            Regenerate/Update Token
+                        </Button>
+                        <Text as="p" tone="subdued">
+                            Use this if you need to refresh the connection permissions or token.
+                        </Text>
+                      </BlockStack>
+
                       <Button 
                         variant="primary" 
                         tone="critical"
@@ -223,6 +335,7 @@ export default function Index() {
                             variant="primary" 
                             onClick={handleConnect}
                             loading={isConnecting}
+                            disabled={isOwnedByOther || !!subscriptionError || !!storeLimitError}
                         >
                             Connect {shop} to Pixeo
                         </Button>
