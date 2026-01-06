@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: pixeo-app
+    runtime: docker
+    plan: starter # Requerido para discos persistentes
+    envVars:
+      - key: SHOPIFY_API_KEY
+        sync: false
+      - key: SHOPIFY_API_SECRET
+        sync: false
+      - key: SCOPES
+        sync: false
+      - key: HOST
+        sync: false
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        value: "file:/data/sqlite.db"
+    disk:
+      name: sqlite-data
+      mountPath: /data
+      sizeGB: 1
+    autoDeploy: false
