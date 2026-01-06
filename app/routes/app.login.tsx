@@ -90,7 +90,6 @@ export default function Auth() {
       provider: "google",
       options: {
         redirectTo: `${window.location.origin}/app`,
-        skipBrowserRedirect: true,
       },
     });
 
