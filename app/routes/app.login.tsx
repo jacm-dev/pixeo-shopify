@@ -86,7 +86,7 @@ export default function Auth() {
   const handleGoogleLogin = async () => {
     if (!supabase) return;
     setLoading(true);
-    const redirectUrl = `${window.location.origin}/app`;
+    const redirectUrl = `${window.location.origin}`;
     console.log(redirectUrl);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
