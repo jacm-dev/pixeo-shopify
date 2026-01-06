@@ -87,11 +87,11 @@ export default function Auth() {
     if (!supabase) return;
     setLoading(true);
     const redirectUrl = `${window.location.origin}`;
-    console.log(redirectUrl);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
         redirectTo: redirectUrl,
+        skipBrowserRedirect: true,
         scopes: 'email profile',
       },
     });
