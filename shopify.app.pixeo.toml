@@ -2,7 +2,7 @@
 
 client_id = "07c74a0cb8d4ab2649724c176929b081"
 name = "pixeo"
-application_url = "https://example.com"
+application_url = "https://pixeo-app.onrender.com"
 embedded = true
 
 [webhooks]
@@ -13,4 +13,8 @@ api_version = "2026-01"
 scopes = "read_products,read_themes,write_products,write_themes"
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [
+  "https://pixeo-app.onrender.com/auth/callback",
+  "https://pixeo-app.onrender.com/auth/shopify/callback",
+  "https://pixeo-app.onrender.com/api/auth/callback"
+]
