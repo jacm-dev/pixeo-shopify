@@ -2,7 +2,7 @@ services:
   - type: web
     name: pixeo-app
     runtime: docker
-    plan: hobby
+    plan: free
     envVars:
       - key: SHOPIFY_API_KEY
         sync: false
