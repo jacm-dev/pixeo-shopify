@@ -86,7 +86,7 @@ export default function Auth() {
   const handleGoogleLogin = async () => {
     if (!supabase) return;
     setLoading(true);
-    const { data, error } = await supabase.auth.signInWithOAuth({
+    const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
         redirectTo: `${window.location.origin}/app`,
@@ -100,12 +100,6 @@ export default function Auth() {
     } else {
       setSupabaseSuccess(true);
       // Auth state change listener will handle redirect
-    }
-
-    if (data?.url) {
-      // Redirect the top window to handle OAuth
-      // This is necessary if the app is embedded in an iframe
-      window.top!.location.href = data.url;
     }
   };
 
