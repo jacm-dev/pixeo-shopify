@@ -19,7 +19,11 @@ import { supabase } from "../supabase.client";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const errors = loginErrorMessage(await login(request));
-  return { errors };
+  return { 
+    errors,
+    shopifyAppUrl: process.env.SHOPIFY_APP_URL,
+    googleClientId: process.env.GOOGLE_CLIENT_ID
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -33,7 +37,6 @@ export default function Auth() {
   const loaderData = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigate = useNavigate();
-  // const [shop, setShop] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -42,6 +45,18 @@ export default function Auth() {
   
   const { errors } = actionData || loaderData || { errors: {} };
   console.log(errors);
+
+  // Helper for generating nonce
+  const generateNonce = async (): Promise<[string, string]> => {
+    const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+    const encoder = new TextEncoder();
+    const encodedNonce = encoder.encode(nonce);
+    const hash = await crypto.subtle.digest("SHA-256", encodedNonce);
+    const hashedNonce = Array.from(new Uint8Array(hash))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    return [nonce, hashedNonce];
+  };
 
   useEffect(() => {
     if (!supabase) return;
@@ -61,8 +76,59 @@ export default function Auth() {
       }
     });
 
-    return () => subscription.unsubscribe();
-  }, [navigate]);
+    // Load Google Script
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.onload = async () => {
+      if (!loaderData?.googleClientId) return;
+      
+      const [nonce, hashedNonce] = await generateNonce();
+      
+      // @ts-expect-error - google is global
+      google.accounts.id.initialize({
+        client_id: loaderData.googleClientId,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        callback: async (response: any) => {
+          setLoading(true);
+          const { error } = await supabase!.auth.signInWithIdToken({
+            provider: 'google',
+            token: response.credential,
+            nonce: nonce,
+          });
+
+          if (error) {
+            setSupabaseError(error.message);
+            setLoading(false);
+          } else {
+            setSupabaseSuccess(true);
+            // Auth state change listener will handle redirect
+          }
+        },
+        nonce: hashedNonce,
+        use_fedcm_for_prompt: true,
+      });
+
+      // Render the Google button
+      // @ts-expect-error - google is global
+      google.accounts.id.renderButton(
+        document.getElementById("google-button-container"),
+        { theme: "outline", size: "large", width: "100%" } 
+      );
+
+      // Optional: Display One Tap
+      // @ts-expect-error - google is global
+      google.accounts.id.prompt();
+    };
+    document.body.appendChild(script);
+
+    return () => {
+      subscription.unsubscribe();
+      if(document.body.contains(script)) {
+        document.body.removeChild(script);
+      }
+    };
+  }, [navigate, loaderData?.googleClientId]);
 
   const handleEmailLogin = async () => {
     if (!supabase) return;
@@ -83,58 +149,10 @@ export default function Auth() {
     }
   };
 
-  const handleGoogleLogin = async () => {
-    if (!supabase) return;
-    setLoading(true);
-    const redirectUrl = `${window.location.origin}`;
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: redirectUrl,
-        skipBrowserRedirect: true,
-        scopes: 'email profile',
-      },
-    });
-
-    if (error) {
-      setSupabaseError(error.message);
-      setLoading(false);
-    } else {
-      setSupabaseSuccess(true);
-      // Auth state change listener will handle redirect
-    }
-  };
-
   return (
     <AppProvider embedded={false}>
       <Page>
         <BlockStack gap="500">
-          {/* <Card>
-            <BlockStack gap="400">
-               <Text as="h2" variant="headingMd">
-                  Shopify Log in
-               </Text>
-               <Form method="post">
-                <FormLayout>
-                  <TextField
-                    label="Shop domain"
-                    name="shop"
-                    placeholder="example.myshopify.com"
-                    value={shop}
-                    onChange={setShop}
-                    autoComplete="on"
-                    error={errors.shop}
-                  />
-                  <Button submit variant="primary">Log in with Shop</Button>
-                </FormLayout>
-               </Form>
-            </BlockStack>
-          </Card> */}
-
-          <div style={{ textAlign: "center" }}>
-            <Text as="p" variant="bodyMd" tone="subdued">OR</Text>
-          </div>
-
           <Card>
              <BlockStack gap="400">
                 <Text as="h2" variant="headingMd">
@@ -148,9 +166,9 @@ export default function Auth() {
                 )}
                 
                 {supabaseError && (
-                   <div style={{background: '#fbeae5', padding: '1rem', borderRadius: '4px'}}>
-                      <Text as="p" tone="critical">{supabaseError}</Text>
-                   </div>
+                  <div style={{background: '#fbeae5', padding: '1rem', borderRadius: '4px'}}>
+                     <Text as="p" tone="critical">{supabaseError}</Text>
+                  </div>
                 )}
 
                 {/* Client-side form - preventing default submission */}
@@ -176,7 +194,7 @@ export default function Auth() {
 
                 <Divider />
                 
-                <Button fullWidth onClick={handleGoogleLogin} loading={loading}>Log in with Google</Button>
+                <div id="google-button-container" style={{ width: '100%' }}></div>
              </BlockStack>
           </Card>
         </BlockStack>
