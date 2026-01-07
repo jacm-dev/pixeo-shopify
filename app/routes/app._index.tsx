@@ -17,7 +17,7 @@ import { supabase as supabaseClient } from "../supabase.client";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  return { shop: session.shop, connection: null };
+  return { shop: session.shop, connection: null, session };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -110,7 +110,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Index() {
-  const { shop } = useLoaderData<typeof loader>();
+  const { shop, session } = useLoaderData<typeof loader>();
+  console.log(session);
   const fetcher = useFetcher<typeof action>();
   const navigate = useNavigate();
   
